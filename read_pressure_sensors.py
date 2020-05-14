@@ -58,6 +58,7 @@ class Teensy():
         self.serial_handle.port = None                # start with no port
         self.verbose = verbose
         atexit.register(self.serial_handle.close)
+        atexit.register(self.send("s"))               # stop data acquisition
 
     def connect(self):
         self.serial_handle.port = findUsbPort(self.serial_handle.hwid)
@@ -82,37 +83,36 @@ class Teensy():
         response += self.serial_handle.readline()       # wait for the first line to fill in the rx buffer
         return response.decode().rstrip()               # return decoded byte response (as string) without traililng newline
 
-    def sample(self, num_samples, period_us=1000):
-        times = []
-        adc0 = []
-        adc1 = []
-        num_datapoints = 0
+    def read_adcs(self):
+        data = self.receive().split(':')
+        if len(data) == 3:
+            print(data[0], data[1], data[2])
+            t0, v0, v1 = None, None, None
+            try:                        # attempt type cast
+                t0 = float(data[0])
+                v0 = float(data[1])
+                v1 = float(data[2])
+            except ValueError:
+                pass                # don't use anything if data was bad
+        return t0, v0, v1
 
+    def sample(self, num_samples, period_us=1000):
+        times, adc0, adc1 = [], [], []
+        num_datapoints = 0
         self.send("s")                         # stop the internal timer
         self.serial_handle.flushInput()        # flush serial input
         self.serial_handle.flushOutput()       # flush serial input
         self.send("s {}".format(period_us))    # set sampling period and begin sampling
-
         while num_datapoints < num_samples + 50:    # take 50 extra samples to get rid of
-            data = self.receive().split(':')
-            if len(data) == 3:
-                print(data[0], data[1], data[2])
-                t0, v0, v1 = None, None, None
-                try:                        # attempt type cast
-                    t0 = float(data[0])
-                    v0 = float(data[1])
-                    v1 = float(data[2])
-                except ValueError:
-                    continue                # skip this line in the buffer if it got garbled
+            t0, v0, v1 = self.read_adcs()
+            if t0 is not None:                      # ignore bad datapoints
                 times.append(t0)
                 adc0.append(v0)
                 adc1.append(v1)
                 num_datapoints += 1
             if num_datapoints >= num_samples + 50:
                 break
-
         self.send("s") # stop the data collection
-
         return times[50:], adc0[50:], adc1[50:]
 
 if __name__ == '__main__':
