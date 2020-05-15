@@ -1,0 +1,7 @@
+,Data Set Name,Sensor,ADC,Degree,C[0],C[1],C[2],C[3]
+0,calibration_data_sensor_A_adc0_10V.csv,A,0,1,3.453953061997075,-0.0017523844769099781,0,0
+1,calibration_data_sensor_A_adc1_10V.csv,A,1,1,3.271707820593067,-0.0017501852549708144,0,0
+2,calibration_data_sensor_B_adc0_10V.csv,B,0,1,1.895823718902632,-0.0020049163459654926,0,0
+3,calibration_data_sensor_B_adc1_10V.csv,B,1,1,1.7225058510289875,-0.0019981736499181785,0,0
+4,calibration_data_sensor_C_adc0_10V.csv,C,0,1,1.6125554662508594,-0.0018532368756232456,0,0
+5,calibration_data_sensor_C_adc1_10V.csv,C,1,1,1.451050284156507,-0.0018500328172220643,0,0
