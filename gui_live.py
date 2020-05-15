@@ -18,7 +18,7 @@ import PySimpleGUI as sg
 
 matplotlib.use('TkAgg') # not sure if this is necessary
 
-filename = sys.argv[1]  # file to read calibration data from
+filename = 'test_data\calibration_coefficients.csv'  # file to read calibration data from
 df = pd.read_csv(filename, index_col=[0])
 
 def get_coef(sensor, adc, deg=1):
@@ -77,10 +77,23 @@ def draw_figure(canvas, figure):
 
 #################### Normal PySimpleGUI Stuff ##########################
 
-# define the window layout
-layout = [[sg.Text('Pressure Sensors')],
-          [sg.Canvas(key='-CANVAS-')],
-          [sg.Button('Exit')]]
+sensors = ['A', 'B', 'C']
+
+layout = [[sg.Text('Window Size (ms):'),
+           sg.Input(key='-IN-', size=(5, 0), default_text=100),
+           sg.Button('Start'),
+           sg.Button('Stop'),
+           sg.Button('Save'),
+           sg.FileSaveAs(),
+           sg.Button('Exit')],
+          [sg.Canvas(key='-CANVAS-')],  # the animation
+          [sg.Frame(title='ADC 0', relief=sg.RELIEF_SUNKEN,
+                    layout=[[sg.Checkbox('Enabled', default=True)],
+                            [sg.Radio('Sensor {}'.format(t), 1) for t in sensors]]),
+           sg.Frame(title='ADC 1', relief=sg.RELIEF_SUNKEN,
+                    layout=[[sg.Checkbox('Enabled', default=True)],
+                            [sg.Radio('Sensor {}'.format(t), 2) for t in sensors]])]
+    ]
 
 # create the form and show it
 window = sg.Window('Pressure Sensors', layout, finalize=True, element_justification='center', font='18')
