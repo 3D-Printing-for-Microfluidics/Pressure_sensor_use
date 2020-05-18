@@ -7,6 +7,10 @@ and options to pause acquisition and save plots and data.
 '''
 
 import sys
+import time
+import queue
+import threading
+import random
 
 import numpy as np
 import pandas as pd
@@ -31,41 +35,63 @@ def psi(counts, sensor='A', adc=0):
     coef = get_coef(sensor=sensor, adc=adc)
     return float(np.polyval(coef, counts))
 
+def data_collection_thread(data_queue):
+
+    # for now, just simulate some random data for development
+    t = 0
+    while True:
+        t += 1
+        x = random.randrange(-25000, 5000)
+        y = random.randrange(-25000, 5000)
+        line = '{},{},{}'.format(t, x, y)
+        data_queue.put(line)  # put a message into queue for GUI
+        time.sleep(0.001)   # sleep about 1ms
 
 # set up live plot
 fig = plt.figure()
 ax = fig.add_subplot(1, 1, 1)
+ui_queue = queue.Queue()
+data_collection_queue = queue.Queue()
 
-def animate(_, n):
-    try:
-        # grab some data
-        graph_data = open('test_out_static.csv', 'r').read()
-        lines = graph_data.split('\n')
-        ts = []
-        adc0 = []
-        adc1 = []
-        for line in lines:
-            if len(line) > 1:
-                t, v0, v1 = line.split(',')
-                ts.append(float(t))
-                adc0.append(psi(float(v0)))
-                adc1.append(psi(float(v1)))
 
-        # plot last n datapoints
-        ax.clear()
-        ax.plot(ts[-n:], adc0[-n:], label='adc0')
-        ax.plot(ts[-n:], adc1[-n:], label='adc1')
-        ax.set_title('Live Sensor Readings')
-        ax.set_xlabel('Time (ms)')
-        ax.set_ylabel('Pressure (psi)')
-        ax.legend(loc='lower right')
-        # fig.tight_layout()
-    except FileNotFoundError:
-        exit()
+ts = []
+adc0 = []
+adc1 = []
+
+def animate(_, n, q, data):
+    if not q.empty():
+        message = q.get_nowait()
+        print('Got a message from GUI: ', message)
+        q.task_done()
+    else:
+        message = None
+
+    # process all data on queue
+    while not data.empty():
+        line = data.get()
+        t, v0, v1 = line.split(',')
+        ts.append(float(t))
+        adc0.append(psi(float(v0)))
+        adc1.append(psi(float(v1)))
+        data.task_done()
+        # print("queue emptied")
+
+    # plot last n datapoints
+    ts_window = ts[-n:]
+    adc0_window = adc0[-n:]
+    adc1_window = adc1[-n:]
+    ax.clear()
+    ax.plot(ts_window, adc0_window, label='adc0')
+    ax.plot(ts_window, adc1_window, label='adc1')
+    ax.set_title('Live Sensor Readings')
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Pressure (psi)')
+    ax.legend(loc='lower right')
+    # fig.tight_layout()
 
 
 window_size = 100
-ani = animation.FuncAnimation(fig, animate, interval=500, fargs=(window_size,))
+ani = animation.FuncAnimation(fig, animate, interval=200, fargs=(window_size, ui_queue, data_collection_queue))
 plt.draw()  # must call plot.draw() to start the animation
 
 # helper function to pass matplotlib backend to pySimpleGui canvas
@@ -111,42 +137,22 @@ window = sg.Window('Pressure Sensors', layout, finalize=True, element_justificat
 # add the plot to the window
 fig_canvas_agg = draw_figure(window['-CANVAS-'].TKCanvas, fig)
 
+# start a thread that continuously collects data
+threading.Thread(target=data_collection_thread, args=(data_collection_queue,), daemon=True).start()
 
-# button callback functions
-def start_callback():
-    print('start')
-def stop_callback():
-    print('stop')
-def save_callback():
-    print('save')
-def saveas_callback():
-    print('save as')
-
-# lookup dictionary that maps buttons to callbacks
-callbacks = {
-    'Start': start_callback,
-    'Stop': stop_callback,
-    'Save': save_callback,
-    'Save As...': saveas_callback,
-}
-
-# main event loop
+# main event loop frr GUI
 while True:
 
-    event, values = window.read()
+    event, values = window.read(timeout=500)
+
+    # check for exit
     if event in ('Exit', None):
         break
 
-    # lookup event in function dictionary
-    if event in callbacks:
-        func_to_call = callbacks[event]   # get function from callback dictionary
-        func_to_call()
-    else:
-        print('Event {} not in dispatch dictionary'.format(event))
+    ui_queue.put_nowait(event)
 
-    print(values)
-    print(values[0])
-    print('ADC0: enabled:{}, {} {} {}'.format(values[1], values[2], values[3], values[4]))
-    print('ADC1: enabled:{}, {} {} {}'.format(values[5], values[6], values[7], values[8]))
+    ts = ts[-window_size:]
+    adc0 = adc0[-window_size:]
+    adc1 = adc1[-window_size:]
 
 window.close()
