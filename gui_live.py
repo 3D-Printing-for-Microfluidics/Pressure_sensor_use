@@ -12,8 +12,8 @@ a PySimpleGUI canvas (which is really just a wrapped tk canvas).
 
 import time
 import queue
-import threading
 import random
+import threading
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -24,6 +24,7 @@ import matplotlib.animation as animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 matplotlib.use('TkAgg')
 
+from teensy import Teensy
 
 # file to read calibration data from
 filename = 'calibration_coefficients.csv'
@@ -35,8 +36,14 @@ raw_data_queue = queue.Queue()      # to pass raw data to main thread
 update_rate_ms = 50                 # refresh time in ms
 ts, adc0, adc1 = [], [], []         # live data containers
 
+# serial communication with Teensy
+dev = True  # for development, ignores Teensy input
+if not dev:
+    teensy_handle = Teensy()
+    teensy_handle.connect()
+
 # read fit coeffiecients and calculate PSI
-def calculate_psi(counts, sensor, adc, deg=1):
+def calculate_psi(counts, sensor, adc, deg=3):
     coef = coeff.iloc[:, -4:][(coeff['Sensor'] == sensor) & (coeff['ADC'] == adc) &
                               (coeff['Degree'] == deg) ].to_numpy().flatten()[::-1]
     return float(np.polyval(coef, counts))
@@ -50,28 +57,36 @@ def get_sensors(msg):
 
 # thread to continuously poll data from sensors
 def data_collection_thread(data_queue, falsify=False):
-    if falsify: # simulate some data for development
-        t = 0
-        while True:
-            t += 1
-            x = np.sin(np.pi*t/112)*12000-10000
-            y = random.randrange(-23000, 3000)
-            line = '{},{},{}'.format(t, x, y)
-            data_queue.put(line)
-            time.sleep(0.001)
-    else:
-        # ser.read() will go here
-        pass
+    try:
+        if falsify: # simulate some data for development
+            t = 0
+            while True:
+                t += 1
+                x = np.sin(np.pi*t/112)*12000-10000
+                y = random.randrange(-23000, 3000)
+                line = '{}:{}:{}'.format(t, x, y)
+                data_queue.put(line)
+                time.sleep(0.001)
+        else:       # read real data
+            while True:
+                line = teensy_handle.receive()
+                print(time.time(), line)
+                data_queue.put(line)
+    except (AttributeError, serial.serialutil.SerialException):
+        pass # ignore attribute error
 
 # process all data on queue from the data collection thread
 def process_data(data_queue, message, t, x, y):
     s = get_sensors(message)
     while not data_queue.empty():
         line = data_queue.get()
-        t0, v0, v1 = line.split(',')
-        t.append(float(t0))
-        x.append(calculate_psi(float(v0), sensor=s[0], adc=0))
-        y.append(calculate_psi(float(v1), sensor=s[1], adc=1))
+        try:
+            t0, v0, v1 = line.split(':')
+            t.append(float(t0))
+            x.append(calculate_psi(float(v0), sensor=s[0], adc=0))
+            y.append(calculate_psi(float(v1), sensor=s[1], adc=1))
+        except ValueError:
+            pass # ignore bad data
         data_queue.task_done()
     try:                        # truncate to appropriate window size
         n = int(message[0])
@@ -79,6 +94,7 @@ def process_data(data_queue, message, t, x, y):
     except (ValueError, TypeError):
         return t, x, y  # don't truncate if there is a bad window size
 
+# draws live plot on a timer callback
 def animate(_, q):
     # get last message on event queue
     message = None
@@ -146,11 +162,13 @@ window = sg.Window('Read Pressure Sensors', layout, finalize=True, element_justi
                    font='18')
 
 # tie matplotlib renderer to pySimpleGui canvas
-figure_canvas_agg = FigureCanvasTkAgg(fig, window['-CANVAS-'].TKCanvas)
-figure_canvas_agg.draw()
-figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
+canvas = FigureCanvasTkAgg(fig, window['-CANVAS-'].TKCanvas)
+canvas.draw()
+canvas.get_tk_widget().pack(side='top', fill='both', expand=1)
 
-threading.Thread(target=data_collection_thread, args=(raw_data_queue, True), daemon=True).start()
+if not dev:
+    teensy_handle.send("s 100000")   # start sampling
+threading.Thread(target=data_collection_thread, args=(raw_data_queue, dev), daemon=True).start()
 data_collection_enable = True
 
 while True: # main event loop for GUI
