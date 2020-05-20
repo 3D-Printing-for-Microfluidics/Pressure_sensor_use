@@ -1,8 +1,12 @@
 '''
-Imbed a live animation into a GUI.
+Imbed a live animation into a PySimpleGUI frontend, with extra plotting
+and sensor control.
 
-Base functionality is there, need to add sensor and adc selection,
-and options to pause acquisition and save plots and data.
+Live sensor data gets read from a separate thread and is converted to
+PSI using calibration coefficients from a file.
+
+The animation fires on a timer callback from matplotlib and renders to
+a PySimpleGUI canvas (which is really just a wrapped tk canvas).
 
 '''
 
@@ -11,31 +15,40 @@ import queue
 import threading
 import random
 from datetime import datetime
-
 import numpy as np
 import pandas as pd
+import PySimpleGUI as sg
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import PySimpleGUI as sg
+matplotlib.use('TkAgg')
 
-matplotlib.use('TkAgg') # not sure if this is necessary
 
-filename = 'test_data\calibration_coefficients.csv'  # file to read calibration data from
-df = pd.read_csv(filename, index_col=[0])
+# file to read calibration data from
+filename = 'test_data\calibration_coefficients.csv'
+coeff = pd.read_csv(filename, index_col=[0])
+fig = plt.figure()
+ax = fig.add_subplot(1, 1, 1)
+animation_queue = queue.Queue()     # to pass GUI events to animation
+raw_data_queue = queue.Queue()      # to pass raw data to main thread
+update_rate_ms = 50                 # refresh time in ms
+ts, adc0, adc1 = [], [], []         # live data containers
 
-# reads the fit coeffiecients from the calibration file
-def get_coef(sensor, adc, deg=1):
-    return df.iloc[:, -4:][(df['Sensor'] == sensor) &
-                           (df['ADC'] == adc) &
-                           (df['Degree'] == deg)
-                          ].to_numpy().flatten()[::-1]
-
-def psi(counts, sensor='A', adc=0):
-    coef = get_coef(sensor=sensor, adc=adc)
+# read fit coeffiecients and calculate PSI
+def calculate_psi(counts, sensor, adc, deg=1):
+    coef = coeff.iloc[:, -4:][(coeff['Sensor'] == sensor) & (coeff['ADC'] == adc) &
+                              (coeff['Degree'] == deg) ].to_numpy().flatten()[::-1]
     return float(np.polyval(coef, counts))
 
+# read the currently selected sensors from the GUI message
+def get_sensors(msg):
+    names = np.array(['A', 'B', 'C'])
+    s0 = [msg[2], msg[3], msg[4]]       # adc0 sensor
+    s1 = [msg[6], msg[7], msg[8]]       # adc1 sensor
+    return(names[s0][0], names[s1][0])  # boolean index to the names
+
+# thread to continuously poll data from sensors
 def data_collection_thread(data_queue, falsify=False):
     if falsify: # simulate some data for development
         t = 0
@@ -44,78 +57,46 @@ def data_collection_thread(data_queue, falsify=False):
             x = np.sin(np.pi*t/112)*12000-10000
             y = random.randrange(-23000, 3000)
             line = '{},{},{}'.format(t, x, y)
-            data_queue.put(line)  # put a message into queue for GUI
-            time.sleep(0.001)   # sleep about 1ms
+            data_queue.put(line)
+            time.sleep(0.001)
     else:
         # ser.read() will go here
         pass
 
-
-# process all data on queue
-def process_data(data_queue, settings_queue, t, x, y):
-    message = None
-
-    # get the most recent message from the GUI
-    while not settings_queue.empty():
-        message = settings_queue.get_nowait()
-        settings_queue.task_done()
-
-    '''
-    0 - window size
-    1 - ADC0 enable
-    2, 3, 4 - ADC 0 sensor select
-    5 - ADC1 enable
-    6,7,8 - ADC 1 sensor select
-    '''
-
-    # process data from the data collection thread
+# process all data on queue from the data collection thread
+def process_data(data_queue, message, t, x, y):
+    s = get_sensors(message)
     while not data_queue.empty():
         line = data_queue.get()
         t0, v0, v1 = line.split(',')
         t.append(float(t0))
-        x.append(psi(float(v0)))
-        y.append(psi(float(v1)))
+        x.append(calculate_psi(float(v0), sensor=s[0], adc=0))
+        y.append(calculate_psi(float(v1), sensor=s[1], adc=1))
         data_queue.task_done()
-
-    try:
-        n = int(message[1][0])
+    try:                        # truncate to appropriate window size
+        n = int(message[0])
         return t[-n:], x[-n:], y[-n:]
-    except (ValueError, TypeError) as e:
-        return t, x, y  # don't truncate the data if there is a poorly formatted message
-
-# set up live plot
-fig = plt.figure()
-ax = fig.add_subplot(1, 1, 1)
-animation_queue = queue.Queue()
-raw_data_queue = queue.Queue()
-data_settings_queue = queue.Queue()
-
-update_rate_ms = 50 # refresh time in ms
-
-# data containers
-ts, adc0, adc1 = [], [], []
+    except (ValueError, TypeError):
+        return t, x, y  # don't truncate if there is a bad window size
 
 def animate(_, q):
-    message = None
-
     # get last message on event queue
+    message = None
     while not q.empty():
         message = q.get_nowait()
         q.task_done()
 
+    # plot last n datapoints
     try:
-        n = int(message[1][0])                              # parse window size
-
-        # plot last n datapoints
+        n = int(message[1][0])  # parse window size
         adc0_window = adc0[-n:]
         adc1_window = adc1[-n:]
-        # ts_window = ts[-n:]                               # moving, real time timestamps
-        ts_window = [i for i in range(len(adc0_window))]    # static timestams
+        ts_window = [i for i in range(len(adc0_window))]
         ax.clear()
-        if message[1][1]:                                   # if adc0 enable checkbox is checked
+        if message[1][1]:       # if adc0 enable checkbox is checked
             ax.plot(ts_window, adc0_window, 'C0', label='adc0')
             ax.legend(loc='lower right')
-        if message[1][5]:                                   # if adc0 enable checkbox is checked
+        if message[1][5]:       # if adc0 enable checkbox is checked
             ax.plot(ts_window, adc1_window, 'C1', label='adc1')
             ax.legend(loc='lower right')
         ax.set_title('Live Sensor Readings')
@@ -125,30 +106,11 @@ def animate(_, q):
         # save displayed data
         if message[0] == 'Save':
             basename = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-            data = pd.DataFrame({'timestamps': ts_window,
-                                 'adc0': adc0_window,
-                                 'adc1': adc1_window})
+            data = pd.DataFrame({'timestamp': ts_window, 'adc0': adc0_window, 'adc1': adc1_window})
             data.to_csv(basename + '.csv')
             plt.savefig(basename + '.png')
-
-        # ax.set_ylim(-5, 45)
-        # fig.tight_layout()
-    except (ValueError, TypeError) as e:
-        pass    # ignore poorly formatted messages
-
-
-window_size = 1000
-ani = animation.FuncAnimation(fig, animate, interval=update_rate_ms,
-                              fargs=(animation_queue,))
-plt.draw()  # must call plot.draw() to start the animation
-
-# helper function to pass matplotlib backend to pySimpleGui canvas
-def draw_figure(canvas, figure):
-    figure_canvas_agg = FigureCanvasTkAgg(figure, canvas)
-    figure_canvas_agg.draw()
-    figure_canvas_agg.get_tk_widget().pack(side='top', fill='both',
-                                           expand=1)
-    return figure_canvas_agg
+    except (ValueError, TypeError):
+        pass    # ignore poorly formatted messages from the GUI
 
 layout = [
     [   # row 1, some control buttons
@@ -157,7 +119,6 @@ layout = [
         sg.Button('Start'),
         sg.Button('Pause'),
         sg.Button('Save'),
-        sg.FileSaveAs(),
         sg.Button('Exit')
     ],
     [   # row 2, the animation
@@ -177,24 +138,23 @@ layout = [
     ]
 ]
 
-# create the form and show it
-window = sg.Window('Pressure Sensors', layout, finalize=True,
-                   element_justification='center', font='18')
+# MUST maintain this order: define animation, plt.draw(), setup window
+# with finalize=True, then create, draw and pack the TkAgg canvas
+ani = animation.FuncAnimation(fig, animate, interval=update_rate_ms, fargs=(animation_queue,))
+plt.draw()  # must call plot.draw() to start the animation
+window = sg.Window('Read Pressure Sensors', layout, finalize=True, element_justification='center',
+                   font='18')
 
-# add the plot to the window
-fig_canvas_agg = draw_figure(window['-CANVAS-'].TKCanvas, fig)
+# tie matplotlib renderer to pySimpleGui canvas
+figure_canvas_agg = FigureCanvasTkAgg(fig, window['-CANVAS-'].TKCanvas)
+figure_canvas_agg.draw()
+figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
 
-# start a thread that continuously collects data
-threading.Thread(target=data_collection_thread,
-                 args=(raw_data_queue, True), daemon=True).start()
-
+threading.Thread(target=data_collection_thread, args=(raw_data_queue, True), daemon=True).start()
 data_collection_enable = True
 
-# main event loop frr GUI
-while True:
-
+while True: # main event loop for GUI
     event, values = window.read(timeout=update_rate_ms)
-
     # check for button events
     if event in ('Exit', None):
         break
@@ -202,17 +162,12 @@ while True:
         data_collection_enable = True
     if event == 'Pause':
         data_collection_enable = False
-
-    # send UI data to animation and data reading queues
+    # send GUI events to animation
     animation_queue.put_nowait((event, values))
-    data_settings_queue.put_nowait((event, values))
-
     # process data when not paused
     if data_collection_enable:
-        ts, adc0, adc1 = process_data(raw_data_queue,
-                                      data_settings_queue, ts,
-                                      adc0, adc1)
-    else:
+        ts, adc0, adc1 = process_data(raw_data_queue, values, ts, adc0, adc1)
+    else:   # if paused, throw away live data
         while not raw_data_queue.empty():
             raw_data_queue.get()
             raw_data_queue.task_done()
