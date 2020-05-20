@@ -26,7 +26,7 @@ matplotlib.use('TkAgg')
 
 
 # file to read calibration data from
-filename = 'test_data\calibration_coefficients.csv'
+filename = 'calibration_coefficients.csv'
 coeff = pd.read_csv(filename, index_col=[0])
 fig = plt.figure()
 ax = fig.add_subplot(1, 1, 1)
