@@ -6,11 +6,11 @@ and options to pause acquisition and save plots and data.
 
 '''
 
-import sys
 import time
 import queue
 import threading
 import random
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -81,8 +81,7 @@ def process_data(data_queue, settings_queue, t, x, y):
         n = int(message[1][0])
         return t[-n:], x[-n:], y[-n:]
     except (ValueError, TypeError) as e:
-        print(e)
-        return t, x, y
+        return t, x, y  # don't truncate the data if there is a poorly formatted message
 
 # set up live plot
 fig = plt.figure()
@@ -103,7 +102,6 @@ def animate(_, q):
     while not q.empty():
         message = q.get_nowait()
         q.task_done()
-        # print(message)
 
     try:
         n = int(message[1][0])                              # parse window size
@@ -123,10 +121,20 @@ def animate(_, q):
         ax.set_title('Live Sensor Readings')
         ax.set_xlabel('Time (ms)')
         ax.set_ylabel('Pressure (psi)')
+
+        # save displayed data
+        if message[0] == 'Save':
+            basename = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            data = pd.DataFrame({'timestamps': ts_window,
+                                 'adc0': adc0_window,
+                                 'adc1': adc1_window})
+            data.to_csv(basename + '.csv')
+            plt.savefig(basename + '.png')
+
         # ax.set_ylim(-5, 45)
         # fig.tight_layout()
     except (ValueError, TypeError) as e:
-        print(e)
+        pass    # ignore poorly formatted messages
 
 
 window_size = 1000
