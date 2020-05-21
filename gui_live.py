@@ -10,6 +10,7 @@ a PySimpleGUI canvas (which is really just a wrapped tk canvas).
 
 '''
 
+import sys
 import time
 import queue
 import random
@@ -37,8 +38,11 @@ update_rate_ms = 50                 # refresh time in ms
 ts, adc0, adc1 = [], [], []         # live data containers
 
 # serial communication with Teensy
-dev = True  # for development, ignores Teensy input
-if not dev:
+dev = False
+if len(sys.argv) > 1:
+    dev = True  # for development, ignores Teensy input
+
+if not dev: 
     teensy_handle = Teensy()
     teensy_handle.connect()
 
